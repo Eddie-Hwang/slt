@@ -72,6 +72,8 @@ def load_data(data_cfg: dict) -> (Dataset, Dataset, Dataset, Vocabulary, Vocabul
             return text.split()
 
     def tokenize_features(features):
+        if not isinstance(features, torch.Tensor):
+            features = torch.Tensor(features)
         ft_list = torch.split(features, 1, dim=0)
         return [ft.squeeze() for ft in ft_list]
 

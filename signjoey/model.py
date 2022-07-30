@@ -1,7 +1,7 @@
 # coding: utf-8
-import tensorflow as tf
+# import tensorflow as tf
 
-tf.config.set_visible_devices([], "GPU")
+# tf.config.set_visible_devices([], "GPU")
 
 import numpy as np
 import torch.nn as nn
@@ -66,9 +66,14 @@ class SignModel(nn.Module):
         self.gls_vocab = gls_vocab
         self.txt_vocab = txt_vocab
 
-        self.txt_bos_index = self.txt_vocab.stoi[BOS_TOKEN]
-        self.txt_pad_index = self.txt_vocab.stoi[PAD_TOKEN]
-        self.txt_eos_index = self.txt_vocab.stoi[EOS_TOKEN]
+        try:
+            self.txt_bos_index = self.txt_vocab.stoi[BOS_TOKEN]
+            self.txt_pad_index = self.txt_vocab.stoi[PAD_TOKEN]
+            self.txt_eos_index = self.txt_vocab.stoi[EOS_TOKEN]
+        except:
+            self.txt_bos_index = self.txt_vocab.get_stoi()['<bos>']
+            self.txt_pad_index = self.txt_vocab.get_stoi()['<pad>']
+            self.txt_eos_index = self.txt_vocab.get_stoi()['<eos>']
 
         self.gloss_output_layer = gloss_output_layer
         self.do_recognition = do_recognition
@@ -193,7 +198,7 @@ class SignModel(nn.Module):
         :return: translation_loss: sum of losses over non-pad elements in the batch
         """
         # pylint: disable=unused-variable
-
+        import IPython; IPython.embed(); exit(1)
         # Do a forward pass
         decoder_outputs, gloss_probabilities = self.forward(
             sgn=batch.sgn,
@@ -369,7 +374,10 @@ def build_model(
     :param do_translation: flag to build the model with translation decoder.
     """
 
-    txt_padding_idx = txt_vocab.stoi[PAD_TOKEN]
+    try:
+        txt_padding_idx = txt_vocab.stoi[PAD_TOKEN]
+    except:
+        txt_padding_idx = txt_vocab.get_stoi()['<pad>']
 
     sgn_embed: SpatialEmbeddings = SpatialEmbeddings(
         **cfg["encoder"]["embeddings"],

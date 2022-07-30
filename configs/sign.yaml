@@ -5,10 +5,13 @@ data:
     sgn: sign
     txt: text
     gls: gloss
-    train: PHOENIX2014T/phoenix14t.pami0.train
-    dev: PHOENIX2014T/phoenix14t.pami0.dev
-    test: PHOENIX2014T/phoenix14t.pami0.test
-    feature_size: 1024
+    # train: PHOENIX2014T/phoenix14t.pami0.train
+    # dev: PHOENIX2014T/phoenix14t.pami0.dev
+    # test: PHOENIX2014T/phoenix14t.pami0.test
+    train: /home/ejhwang/projects/phoenix14t/data/phoenix14t.pose.train
+    dev: /home/ejhwang/projects/phoenix14t/data/phoenix14t.pose.dev
+    test: /home/ejhwang/projects/phoenix14t/data/phoenix14t.pose.test
+    feature_size: 240
     level: word
     txt_lowercase: true
     max_sent_length: 400

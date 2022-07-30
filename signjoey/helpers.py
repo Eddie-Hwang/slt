@@ -17,9 +17,9 @@ import numpy as np
 
 import torch
 from torch import nn, Tensor
-from torchtext.data import Dataset
+# from torchtext.data import Dataset
 import yaml
-from signjoey.vocabulary import GlossVocabulary, TextVocabulary
+# from signjoey.vocabulary import GlossVocabulary, TextVocabulary
 
 
 def make_model_dir(model_dir: str, overwrite: bool = False) -> str:
@@ -116,11 +116,11 @@ def set_seed(seed: int):
 
 
 def log_data_info(
-    train_data: Dataset,
-    valid_data: Dataset,
-    test_data: Dataset,
-    gls_vocab: GlossVocabulary,
-    txt_vocab: TextVocabulary,
+    train_data,
+    valid_data,
+    test_data,
+    gls_vocab,
+    txt_vocab,
     logging_function: Callable[[str], None],
 ):
     """
