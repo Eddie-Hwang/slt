@@ -3,7 +3,19 @@
 This repo contains the training and evaluation code for the paper [Sign Language Transformers: Sign Language Transformers: Joint End-to-end Sign Language Recognition and Translation](https://www.cihancamgoz.com/pub/camgoz2020cvpr.pdf). 
 
 This code is based on [Joey NMT](https://github.com/joeynmt/joeynmt) but modified to realize joint continuous sign language recognition and translation. For text-to-text translation experiments, you can use the original Joey NMT framework.
- 
+
+## Note
+We fixed the SLT model to the PyTorch Lightning version.
+  ```bash
+  python train_slt.py \
+    --dataset_type {DATASET_TYPE} \
+    --train_path {TRAIN_PATH} \
+    --valid_path {VALID_PATH} \
+    --test_path {TEST_PATH}
+    --accelerator gpu --devices 0 --num_workers \
+    --use_early_stopping
+  ```
+
 ## Requirements
 * Download the feature files using the `data/download.sh` script.
 

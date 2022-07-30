@@ -43,6 +43,7 @@ class SignLanguageTranslatorModule(pl.LightningModule):
         valid_path,
         test_path,
         num_workers,
+        lr,
         **kwargs
     ):
         super().__init__()
@@ -71,16 +72,6 @@ class SignLanguageTranslatorModule(pl.LightningModule):
         
         self.batch_type = train_config.get("batch_type", "sentence")
         self.batch_size = train_config["batch_size"]
-
-        self.frame_subsampling_ratio = config["data"].get(
-            "frame_subsampling_ratio", None
-        )
-        self.random_frame_subsampling = config["data"].get(
-            "random_frame_subsampling", None
-        )
-        self.random_frame_masking_ratio = config["data"].get(
-            "random_frame_masking_ratio", None
-        )
         
         model = build_model(
             cfg = config["model"],
@@ -109,11 +100,7 @@ class SignLanguageTranslatorModule(pl.LightningModule):
         self.num_display = num_save
         self.num_worker = num_workers
 
-        self.lr = train_config['learning_rate']
-        self.lr_min = train_config['learning_rate_min']
-        self.weight_decay = train_config['weight_decay']
-        self.patience = train_config['patience']
-        self.decrease_factor = train_config['decrease_factor']
+        self.lr = lr
 
         self.trainset = trainset
         self.validset = validset
@@ -153,16 +140,15 @@ class SignLanguageTranslatorModule(pl.LightningModule):
     def _common_step(self, batch, stage):
         text, joints = batch['text'], batch['joints']
         
-        # joint inputs
+        joint_inputs = pad_sequence(joints, batch_first = True, padding_value = 0.)
+        joint_inputs = rearrange(joint_inputs, 'b t v c -> b t (v c)')
+        
         joint_lengths = torch.tensor([len(j) for j in joints])
         joint_pad_mask = [torch.ones(j.size(0)) for j in joints]
         joint_pad_mask = pad_sequence(joint_pad_mask, batch_first = True)
         joint_pad_mask = joint_pad_mask.to(self.device)
         
-        joints = pad_sequence(joints, batch_first = True, padding_value = 0.)
-        joints = rearrange(joints, 'b t v c -> b t (v c)')
-        
-        # text inputs
+        # tokenizing
         text_input_ids, text_pad_mask = self.text_tokenizer.encode(
             text, 
             padding = True, 
@@ -172,26 +158,27 @@ class SignLanguageTranslatorModule(pl.LightningModule):
         
         joint_pad_mask = rearrange(joint_pad_mask, 'b t -> b () t')
         joint_pad_mask = joint_pad_mask.bool()
+        
         text_pad_mask = rearrange(text_pad_mask, 'b t -> b () t')
         text_pad_mask = text_pad_mask.bool()
         
         decoder_outputs, _ = self.model(
-            sgn = joints,
+            sgn = joint_inputs,
             sgn_mask = joint_pad_mask,
             sgn_lengths = joint_lengths,
             txt_input = text_input_ids,
             txt_mask = text_pad_mask,
         )
-
-        assert decoder_outputs is not None
         
         word_outputs, _, _, _ = decoder_outputs
         
-        # Calculate Translation Loss
-        txt_log_probs = F.log_softmax(word_outputs, dim=-1)
-
-        loss = self.translation_loss_function(txt_log_probs, text_input_ids)
-        loss /= self.batch_size
+        # Calculate Translation Loss: It does not seems a right-shifted loss
+        # txt_log_probs = F.log_softmax(word_outputs, dim=-1)
+        # loss = self.translation_loss_function(txt_log_probs, text_input_ids)
+        # loss /= self.batch_size
+        
+        word_outputs = rearrange(word_outputs, 'b n c -> b c n')
+        loss = F.cross_entropy(word_outputs[:, :, :-1], text_input_ids[:, 1:], ignore_index = self.txt_pad_index)
         
         self.log(f'{stage}/loss', loss, batch_size = self.batch_size)
 
@@ -199,7 +186,7 @@ class SignLanguageTranslatorModule(pl.LightningModule):
             return loss
 
         encoder_output, encoder_hidden = self.model.encode(
-            sgn = joints,
+            sgn = joint_inputs,
             sgn_mask = joint_pad_mask,
             sgn_length = joint_lengths
         )
@@ -269,14 +256,14 @@ class SignLanguageTranslatorModule(pl.LightningModule):
         return self._common_epoch_end(outputs, 'val')
 
     def configure_optimizers(self):
-        optim = torch.optim.Adam(self.parameters(), lr = self.lr, weight_decay = self.weight_decay)
+        optim = torch.optim.Adam(self.parameters(), lr = self.lr)
         sched = torch.optim.lr_scheduler.ReduceLROnPlateau(
             optimizer = optim,
             mode = 'min',
-            factor = self.decrease_factor,
-            patience = self.patience,
+            factor = 0.5,
+            patience = 10,
             cooldown = 10,
-            min_lr = self.lr_min,
+            min_lr = 1e-6,
             verbose = True
         )
         
@@ -351,9 +338,9 @@ class SignLanguageTranslatorModule(pl.LightningModule):
         )
         return early_stopping_callback, ckpt_callback
 
-    def get_logger(self, type = 'tensorboard', name = 'slp'):
+    def get_logger(self, type = 'tensorboard'):
         if type == 'tensorboard':
-            logger = TensorBoardLogger("slp_logs", name = name)
+            logger = TensorBoardLogger("slt_logs")
         else:
             raise NotImplementedError
         return logger
@@ -371,7 +358,7 @@ def main(hparams):
     if hparams.use_early_stopping:
         callbacks_list.append(early_stopping)
     
-    logger = module.get_logger('tensorboard', name = 'slt')
+    logger = module.get_logger('tensorboard')
     hparams.logger = logger
     
     trainer = pl.Trainer.from_argparse_args(hparams, callbacks = callbacks_list)
@@ -396,6 +383,7 @@ if __name__=='__main__':
     parser.add_argument('--num_save', type = int, default = 3)
     parser.add_argument('--use_early_stopping', action = 'store_true')
     parser.add_argument('--gradient_clip_val', type = float, default = 0.0)
+    parser.add_argument('--lr', type = float, default = 1e-4)
 
     hparams = parser.parse_args()
 
@@ -403,5 +391,5 @@ if __name__=='__main__':
 
 
 '''
-python train_slt.py --accelerator gpu --devices 0 --num_workers 8
+python train_slt.py --accelerator gpu --devices 0 --num_workers 8 --use_early_stopping
 '''
