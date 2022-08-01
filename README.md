@@ -12,7 +12,7 @@ We fixed the SLT model to the PyTorch Lightning version.
     --train_path {TRAIN_PATH} \
     --valid_path {VALID_PATH} \
     --test_path {TEST_PATH}
-    --accelerator gpu --devices 0 --num_workers \
+    --accelerator gpu --devices 0 --num_workers 8 \
     --use_early_stopping
   ```
 

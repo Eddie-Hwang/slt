@@ -47,10 +47,6 @@ def load_data(
         val_joint_path = os.path.join(root, 'val_2D_keypoints', 'json')
         tst_joint_path = os.path.join(root, 'test_2D_keypoints', 'json')
 
-        # tr_joint_feat_path = os.path.join(root, 'train_feat')
-        # val_joint_feat_path = os.path.join(root, 'val_feat')
-        # tst_joint_feat_path = os.path.join(root, 'val_feat')
-
         trainset = How2SignDataset(
             trans_path = train_trans_path, 
             joint_path = tr_joint_path, 

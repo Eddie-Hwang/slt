@@ -1,5 +1,8 @@
 from argparse import ArgumentParser
-
+from tokenize import Token
+from typing import Counter
+from matplotlib.collections import Collection
+from torchtext.vocab import vocab
 import pytorch_lightning as pl
 import torch
 import yaml
@@ -9,16 +12,14 @@ from pytorch_lightning.loggers import TensorBoardLogger
 from torch.nn import functional as F
 from torch.nn.utils.rnn import pad_sequence
 from torch.utils.data import DataLoader
-
-from signjoey.data_new import load_data
+from collections import OrderedDict
+from data_new import load_data, load_json
 from signjoey.loss import XentLoss
 from signjoey.metrics import bleu, chrf, rouge
 from signjoey.model import build_model
 from signjoey.search import greedy
-
-from signjoey.tokenizer import (HugTokenizer, SimpleTokenizer,
-                                build_vocab_from_phoenix,
-                                white_space_tokenizer)
+from tokenizer import (BpeTokenizer, HugTokenizer, SimpleTokenizer,
+                       build_vocab_from_phoenix, white_space_tokenizer)
 
 
 def load_config(path="configs/default.yaml") -> dict:
@@ -44,6 +45,8 @@ class SignLanguageTranslatorModule(pl.LightningModule):
         test_path,
         num_workers,
         lr,
+        bpe,
+        bpe_fpath,
         **kwargs
     ):
         super().__init__()
@@ -60,13 +63,33 @@ class SignLanguageTranslatorModule(pl.LightningModule):
             valid_trans_path = valid_path,
             test_trans_path = test_path
         )
-        
-        # build vocab
-        gls_vocab = build_vocab_from_phoenix(train_path, white_space_tokenizer, mode = 'gloss')
-        txt_vocab = build_vocab_from_phoenix(train_path, white_space_tokenizer, mode = 'text')
 
+        if dataset_type != 'how2sign':
+            if not bpe:
+                # the vocab size is 2892 with phoenix dataset
+                txt_vocab = build_vocab_from_phoenix(train_path, white_space_tokenizer, mode = 'text')
+                text_tokenizer = SimpleTokenizer(white_space_tokenizer, txt_vocab)
+            else:
+                txt_json = load_json(bpe_fpath)
+                txt_json = txt_json['model']['vocab']
+                
+                # torchtext cannot merge with Tokenizers of HuggingFace
+                specials = ['<pad>', '<bos>', '<eos>', '<unk>'] # order is important
+                vocab_list = []
+                for k in txt_json.keys():
+                    if k not in specials:
+                        vocab_list.append(k)
+                vocab_counter = Counter(vocab_list)
+                
+                # the vocab size is 1000 with phoenix
+                txt_vocab = vocab(OrderedDict(vocab_counter), specials = specials)
+                
+                text_tokenizer = BpeTokenizer(bpe_fpath)
+        else:
+            raise NotImplementedError
+        
         # define tokenzier
-        self.text_tokenizer = SimpleTokenizer(white_space_tokenizer, txt_vocab)
+        self.text_tokenizer = text_tokenizer
 
         train_config = config["training"]
         
@@ -75,7 +98,7 @@ class SignLanguageTranslatorModule(pl.LightningModule):
         
         model = build_model(
             cfg = config["model"],
-            gls_vocab = gls_vocab,
+            gls_vocab = None,
             txt_vocab = txt_vocab,
             sgn_dim = sum(config["data"]["feature_size"])
             if isinstance(config["data"]["feature_size"], list)
@@ -155,7 +178,7 @@ class SignLanguageTranslatorModule(pl.LightningModule):
             add_special_tokens = True,
             device = self.device
         )
-        
+
         joint_pad_mask = rearrange(joint_pad_mask, 'b t -> b () t')
         joint_pad_mask = joint_pad_mask.bool()
         
@@ -271,7 +294,7 @@ class SignLanguageTranslatorModule(pl.LightningModule):
             'optimizer': optim,
             'lr_scheduler': {
                 'scheduler': sched,
-                'monitor': 'val/loss',
+                'monitor': 'val/bleu4',
                 'frequency': self.trainer.check_val_every_n_epoch
             },
         }
@@ -351,7 +374,7 @@ def main(hparams):
     
     module = SignLanguageTranslatorModule(**vars(hparams))
     
-    early_stopping, ckpt = module.get_callback_fn('val/loss', 50)
+    early_stopping, ckpt = module.get_callback_fn('val/bleu4', patience = 50)
     
     callbacks_list = [ckpt]
 
@@ -362,11 +385,18 @@ def main(hparams):
     hparams.logger = logger
     
     trainer = pl.Trainer.from_argparse_args(hparams, callbacks = callbacks_list)
-    trainer.fit(module)
+    
+    if not hparams.test:
+        trainer.fit(module, ckpt_path = hparams.ckpt if hparams.ckpt != None else None)
+        if not hparams.fast_dev_run:
+            trainer.test(module)
+    else:
+        assert hparams.ckpt != None, 'Trained checkpoint must be provided.'
+        trainer.test(module, ckpt_path = hparams.ckpt)
 
 
 if __name__=='__main__':
-    parser = ArgumentParser(add_help=False)
+    parser = ArgumentParser(add_help = False)
     parser.add_argument('--seed', type = int, default = 42)
     parser.add_argument('--cfg_file', type = str, default = 'configs/sign.yaml')
     parser.add_argument("--fast_dev_run", action = "store_true")
@@ -383,7 +413,11 @@ if __name__=='__main__':
     parser.add_argument('--num_save', type = int, default = 3)
     parser.add_argument('--use_early_stopping', action = 'store_true')
     parser.add_argument('--gradient_clip_val', type = float, default = 0.0)
-    parser.add_argument('--lr', type = float, default = 1e-4)
+    parser.add_argument('--lr', type = float, default = 1e-5)
+    parser.add_argument('--test', action = 'store_true')
+    parser.add_argument('--ckpt', default = None)
+    parser.add_argument('--bpe', action = 'store_true')
+    parser.add_argument('--bpe_fpath', default = './bpe/phoenix/phoenix-bpe-1000-vocab.json')
 
     hparams = parser.parse_args()
 
@@ -391,5 +425,15 @@ if __name__=='__main__':
 
 
 '''
-python train_slt.py --accelerator gpu --devices 0 --num_workers 8 --use_early_stopping
+(training on phoenix14t)
+python train_slt.py \
+    --accelerator gpu --devices 0 --use_early_stopping --bpe
+
+(training on how2sign)
+python train_slt.py \
+    --accelerator gpu --devices 0 --num_workers 8 --use_early_stopping \
+    --dataset_type how2sign \
+    --train_path /home/ejhwang/projects/how2sign/how2sign_realigned_train.csv \
+    --valid_path /home/ejhwang/projects/how2sign/how2sign_realigned_val.csv \
+    --test_path /home/ejhwang/projects/how2sign/how2sign_realigned_test.csv
 '''
