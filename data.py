@@ -4,6 +4,7 @@ import json
 import os
 import pickle
 import random
+import re
 
 import pandas as pd
 import torch
@@ -23,9 +24,14 @@ def load_json(fpath):
 
 
 def get_random_seq(seq, seq_len):
-    start = random.randrange(0, len(seq) + 1 - seq_len)
-    end = start + seq_len
-    return seq[start : end]
+    if len(seq) > seq_len:
+        start = random.randrange(0, len(seq) + 1 - seq_len)
+        end = start + seq_len
+        selected = seq[start : end]
+    else:
+        selected = seq
+
+    return selected
 
 
 def load_data(

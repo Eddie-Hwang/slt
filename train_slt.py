@@ -1,8 +1,8 @@
+import os
 from argparse import ArgumentParser
-from tokenize import Token
+from collections import OrderedDict
 from typing import Counter
-from matplotlib.collections import Collection
-from torchtext.vocab import vocab
+
 import pytorch_lightning as pl
 import torch
 import yaml
@@ -12,14 +12,15 @@ from pytorch_lightning.loggers import TensorBoardLogger
 from torch.nn import functional as F
 from torch.nn.utils.rnn import pad_sequence
 from torch.utils.data import DataLoader
-from collections import OrderedDict
-from data_new import load_data, load_json
+from torchtext.vocab import vocab 
+
+from data import load_data, load_json
 from signjoey.loss import XentLoss
 from signjoey.metrics import bleu, chrf, rouge
 from signjoey.model import build_model
 from signjoey.search import greedy
-from tokenizer import (BpeTokenizer, HugTokenizer, SimpleTokenizer,
-                       build_vocab_from_phoenix, white_space_tokenizer)
+from tokenizer import (HugTokenizer, SimpleTokenizer, build_vocab_from_phoenix,
+                       white_space_tokenizer)
 
 
 def load_config(path="configs/default.yaml") -> dict:
@@ -34,6 +35,44 @@ def load_config(path="configs/default.yaml") -> dict:
     return cfg
 
 
+def set_whitespace_tokenizer(train_path, mode, **kwargs):
+    _vocab = build_vocab_from_phoenix(train_path, white_space_tokenizer, mode = mode)
+    _tokenizer = SimpleTokenizer(white_space_tokenizer, _vocab)
+
+    return {'tokenizer': _tokenizer, 'vocab': _vocab}
+
+
+def set_hug_tokenizer(tokenizer_fpath, **kwargs):
+    os.environ['TOKENIZERS_PARALLELISM'] = 'false'
+            
+    txt_json = load_json(tokenizer_fpath)
+    txt_json = txt_json['model']['vocab']
+    
+    # torchtext cannot merge with Tokenizers of HuggingFace
+    specials = ['<pad>', '<bos>', '<eos>', '<unk>'] # IMPORTANT: order is strict
+    
+    vocab_list = []
+    for k in txt_json.keys():
+        if k not in specials:
+            vocab_list.append(k)
+    vocab_counter = Counter(vocab_list)
+    
+    # the vocab size is 1000 with phoenix
+    _vocab = vocab(OrderedDict(vocab_counter), specials = specials)
+    
+    _tokenizer = HugTokenizer(tokenizer_fpath)
+    
+    return {'tokenizer': _tokenizer, 'vocab': _vocab}
+
+
+def set_tokenizer_dict():
+    return {
+        'whitespace': set_whitespace_tokenizer,
+        'bpe': set_hug_tokenizer,
+        'wordpiece': set_hug_tokenizer
+    }
+
+
 class SignLanguageTranslatorModule(pl.LightningModule):
     def __init__(
         self,
@@ -45,8 +84,8 @@ class SignLanguageTranslatorModule(pl.LightningModule):
         test_path,
         num_workers,
         lr,
-        bpe,
-        bpe_fpath,
+        tokenizer_type,
+        tokenizer_fpath,
         **kwargs
     ):
         super().__init__()
@@ -61,35 +100,21 @@ class SignLanguageTranslatorModule(pl.LightningModule):
             dataset_type = dataset_type,
             train_trans_path = train_path,
             valid_trans_path = valid_path,
-            test_trans_path = test_path
+            test_trans_path = test_path,
+            min_seq_len = 32,
+            seq_len = 512, # model capacity cannot handle full sequence length of dataset.
         )
 
-        if dataset_type != 'how2sign':
-            if not bpe:
-                # the vocab size is 2892 with phoenix dataset
-                txt_vocab = build_vocab_from_phoenix(train_path, white_space_tokenizer, mode = 'text')
-                text_tokenizer = SimpleTokenizer(white_space_tokenizer, txt_vocab)
-            else:
-                txt_json = load_json(bpe_fpath)
-                txt_json = txt_json['model']['vocab']
-                
-                # torchtext cannot merge with Tokenizers of HuggingFace
-                specials = ['<pad>', '<bos>', '<eos>', '<unk>'] # order is important
-                vocab_list = []
-                for k in txt_json.keys():
-                    if k not in specials:
-                        vocab_list.append(k)
-                vocab_counter = Counter(vocab_list)
-                
-                # the vocab size is 1000 with phoenix
-                txt_vocab = vocab(OrderedDict(vocab_counter), specials = specials)
-                
-                text_tokenizer = BpeTokenizer(bpe_fpath)
-        else:
-            raise NotImplementedError
+        tokenizer_dict = set_tokenizer_dict()
+        
+        _tokenizer = tokenizer_dict[tokenizer_type](
+            train_path = train_path,
+            tokenizer_fpath = tokenizer_fpath, 
+            mode = 'text'
+        )
         
         # define tokenzier
-        self.text_tokenizer = text_tokenizer
+        self.text_tokenizer = _tokenizer['tokenizer']
 
         train_config = config["training"]
         
@@ -99,7 +124,7 @@ class SignLanguageTranslatorModule(pl.LightningModule):
         model = build_model(
             cfg = config["model"],
             gls_vocab = None,
-            txt_vocab = txt_vocab,
+            txt_vocab = _tokenizer['vocab'],
             sgn_dim = sum(config["data"]["feature_size"])
             if isinstance(config["data"]["feature_size"], list)
             else config["data"]["feature_size"],
@@ -111,7 +136,7 @@ class SignLanguageTranslatorModule(pl.LightningModule):
         self.txt_pad_index = self.model.txt_pad_index
         self.txt_bos_index = self.model.txt_bos_index
         self.txt_eos_index = self.model.txt_eos_index
-        
+
         self.feature_size = config["data"]["feature_size"]
 
         self._get_translation_params(train_config = train_config)
@@ -178,7 +203,7 @@ class SignLanguageTranslatorModule(pl.LightningModule):
             add_special_tokens = True,
             device = self.device
         )
-
+        
         joint_pad_mask = rearrange(joint_pad_mask, 'b t -> b () t')
         joint_pad_mask = joint_pad_mask.bool()
         
@@ -229,15 +254,17 @@ class SignLanguageTranslatorModule(pl.LightningModule):
         return {
             'loss': loss,
             'generated': generated,
-            'answer': text_input_ids
+            'answer': text_input_ids,
+            'text': text
         }
 
     def _common_epoch_end(self, outputs, stage):
-        ans_text, gen_text = [], []
+        ans_text, gen_text, real_text = [], [], []
         for output in outputs:
             generated_outs = output['generated']
             generated_outs = torch.tensor(generated_outs)
             answers = output['answer']
+            text = output['text']
             
             batch_gen_text = self.text_tokenizer.decode(
                 generated_outs, 
@@ -250,10 +277,11 @@ class SignLanguageTranslatorModule(pl.LightningModule):
             
             gen_text += batch_gen_text
             ans_text += batch_ans_text
-
-        txt_bleu = bleu(references = ans_text, hypotheses = gen_text)
-        txt_chrf = chrf(references = ans_text, hypotheses = gen_text)
-        txt_rouge = rouge(references = ans_text, hypotheses = gen_text)
+            real_text += text
+        
+        txt_bleu = bleu(references = real_text, hypotheses = gen_text)
+        txt_chrf = chrf(references = real_text, hypotheses = gen_text)
+        txt_rouge = rouge(references = real_text, hypotheses = gen_text)
         
         # logging
         for k in txt_bleu.keys():
@@ -264,8 +292,9 @@ class SignLanguageTranslatorModule(pl.LightningModule):
         # display results
         print('============================================================')
         print(f'[INFO] Sample token outputs at epoch {self.current_epoch}')
-        print(f'\nAnswer joint token: {ans_text[:self.num_display]}')
-        print(f'\nGenerated joint token: {gen_text[:self.num_display]}')
+        print(f'\nReal text: {real_text[:self.num_display]}')
+        print(f'\nAnswer decoded token: {ans_text[:self.num_display]}')
+        print(f'\nGenerated decoded token: {gen_text[:self.num_display]}')
         print(f'\nScores: {txt_bleu}')
         print('============================================================')
         
@@ -275,8 +304,14 @@ class SignLanguageTranslatorModule(pl.LightningModule):
     def validation_step(self, batch, batch_idx):
         return self._common_step(batch, 'val')
 
+    def test_step(self, batch, batch_idx):
+        return self._common_step(batch, 'tst')
+
     def validation_epoch_end(self, outputs):
         return self._common_epoch_end(outputs, 'val')
+
+    def test_epoch_end(self, outputs):
+        self._common_epoch_end(outputs, 'tst')
 
     def configure_optimizers(self):
         optim = torch.optim.Adam(self.parameters(), lr = self.lr)
@@ -286,7 +321,7 @@ class SignLanguageTranslatorModule(pl.LightningModule):
             factor = 0.5,
             patience = 10,
             cooldown = 10,
-            min_lr = 1e-6,
+            min_lr = 1e-8,
             verbose = True
         )
         
@@ -320,7 +355,7 @@ class SignLanguageTranslatorModule(pl.LightningModule):
     def test_dataloader(self):
         return DataLoader(
             self.testset, 
-            batch_size = 1, 
+            batch_size = self.batch_size, 
             shuffle = False, 
             num_workers = self.num_worker, 
             collate_fn = self._collate_fn
@@ -328,18 +363,19 @@ class SignLanguageTranslatorModule(pl.LightningModule):
 
     def _collate_fn(self, batch):
         id_list, text_list, gloss_list, joint_list = [], [], [], []
+        id_list, text_list, joint_list = [], [], []
         
         sorted_batch = sorted(batch, key = lambda x: x['frame_len'], reverse = True)
         for data in sorted_batch:
             id_list.append(data['id'])
             text_list.append(data['text'])
-            gloss_list.append(data['gloss'])
+            # gloss_list.append(data['gloss'])
             joint_list.append(data['joint_feats'])
 
         return {
             'id': id_list,
             'text': text_list,
-            'gloss': gloss_list,
+            # 'gloss': gloss_list,
             'joints': joint_list
         }
 
@@ -361,9 +397,9 @@ class SignLanguageTranslatorModule(pl.LightningModule):
         )
         return early_stopping_callback, ckpt_callback
 
-    def get_logger(self, type = 'tensorboard'):
+    def get_logger(self, type, name):
         if type == 'tensorboard':
-            logger = TensorBoardLogger("slt_logs")
+            logger = TensorBoardLogger("slt_logs", name = name)
         else:
             raise NotImplementedError
         return logger
@@ -381,7 +417,7 @@ def main(hparams):
     if hparams.use_early_stopping:
         callbacks_list.append(early_stopping)
     
-    logger = module.get_logger('tensorboard')
+    logger = module.get_logger('tensorboard', name = hparams.dataset_type)
     hparams.logger = logger
     
     trainer = pl.Trainer.from_argparse_args(hparams, callbacks = callbacks_list)
@@ -413,25 +449,36 @@ if __name__=='__main__':
     parser.add_argument('--num_save', type = int, default = 3)
     parser.add_argument('--use_early_stopping', action = 'store_true')
     parser.add_argument('--gradient_clip_val', type = float, default = 0.0)
-    parser.add_argument('--lr', type = float, default = 1e-5)
+    parser.add_argument('--lr', type = float, default = 1e-4)
     parser.add_argument('--test', action = 'store_true')
     parser.add_argument('--ckpt', default = None)
-    parser.add_argument('--bpe', action = 'store_true')
-    parser.add_argument('--bpe_fpath', default = './bpe/phoenix/phoenix-bpe-1000-vocab.json')
+    parser.add_argument('--tokenizer_type', type = str, default = 'wordpiece', help="[bpe, wordpiece, whitespace]")
+    parser.add_argument('--tokenizer_fpath', default = './wordpiece/phoenix/phoenix-wordpiece-512-vocab.json')
 
     hparams = parser.parse_args()
 
-    main(hparams)
+    # main(hparams)
+    
+    datast_type = hparams.dataset_type
+    tokenizer_type = hparams.tokenizer_type
+    
+    tokenizer_fpath_list \
+        = [f'./{tokenizer_type}/{datast_type}/{datast_type}-{tokenizer_type}-{2**i}-vocab.json' for i in range(14, 16)]
+    
+    for tokenizer_fpath in tokenizer_fpath_list:
+        print(tokenizer_fpath)
+        hparams.tokenizer_fpath = tokenizer_fpath
+        main(hparams)
 
 
 '''
-(training on phoenix14t)
+(training on phoenix)
 python train_slt.py \
-    --accelerator gpu --devices 0 --use_early_stopping --bpe
+    --accelerator gpu --devices 0 --num_workers 8 --use_early_stopping
 
 (training on how2sign)
 python train_slt.py \
-    --accelerator gpu --devices 0 --num_workers 8 --use_early_stopping \
+   --accelerator gpu --devices 0 --num_workers 8 --use_early_stopping \
     --dataset_type how2sign \
     --train_path /home/ejhwang/projects/how2sign/how2sign_realigned_train.csv \
     --valid_path /home/ejhwang/projects/how2sign/how2sign_realigned_val.csv \

@@ -113,47 +113,47 @@ class SimpleTokenizer:
         return text_list
 
 
-class HugTokenizer:
-    def __init__(self, model = 'bert-base-uncased'):
-        tokenizer = BertTokenizer.from_pretrained(model)
+# class HugTokenizer:
+#     def __init__(self, model = 'bert-base-uncased'):
+#         tokenizer = BertTokenizer.from_pretrained(model)
         
-        self.vocab_size = tokenizer.vocab_size
+#         self.vocab_size = tokenizer.vocab_size
         
-        self.pad_token = tokenizer.pad_token_id
-        self.start_token = tokenizer.bos_token_id
-        self.end_token = tokenizer.eos_token_id
+#         self.pad_token = tokenizer.pad_token_id
+#         self.start_token = tokenizer.bos_token_id
+#         self.end_token = tokenizer.eos_token_id
         
-        self.tokenizer = tokenizer
+#         self.tokenizer = tokenizer
 
-    def set_max_length(self, max_len):
-        self.tokenizer.model_max_length = max_len
+#     def set_max_length(self, max_len):
+#         self.tokenizer.model_max_length = max_len
 
-    def encode(
-        self, 
-        texts, 
-        padding, 
-        add_special_tokens = False, 
-        device = 'cpu'
-    ):
-        encoded = self.tokenizer.batch_encode_plus(
-            texts, 
-            return_tensors = 'pt', 
-            padding = padding, 
-            truncation = True,
-            add_special_tokens = add_special_tokens
-        )
+#     def encode(
+#         self, 
+#         texts, 
+#         padding, 
+#         add_special_tokens = False, 
+#         device = 'cpu'
+#     ):
+#         encoded = self.tokenizer.batch_encode_plus(
+#             texts, 
+#             return_tensors = 'pt', 
+#             padding = padding, 
+#             truncation = True,
+#             add_special_tokens = add_special_tokens
+#         )
 
-        input_ids = encoded.input_ids.to(device)
-        pad_mask = encoded.attention_mask.to(device)
+#         input_ids = encoded.input_ids.to(device)
+#         pad_mask = encoded.attention_mask.to(device)
 
-        return input_ids, pad_mask
+#         return input_ids, pad_mask
       
-    def decode(self, tokens):
-        decoded = self.tokenizer.batch_decode(tokens, skip_special_tokens = True)
-        return decoded
+#     def decode(self, tokens):
+#         decoded = self.tokenizer.batch_decode(tokens, skip_special_tokens = True)
+#         return decoded
 
 
-class BpeTokenizer:
+class HugTokenizer:
     def __init__(self, fpath):
         tokenizer = Tokenizer.from_file(fpath)
         
@@ -170,7 +170,11 @@ class BpeTokenizer:
                 ("<eos>", tokenizer.token_to_id("<eos>")),
             ],
         )
-
+        
+        self.pad_token = tokenizer.token_to_id('<pad>')
+        self.start_token = tokenizer.token_to_id('<bos>')
+        self.end_token = tokenizer.token_to_id('<eos>')
+        self.vocab_size = tokenizer.get_vocab_size()
         self.tokenizer = tokenizer
 
     def encode(
