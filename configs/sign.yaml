@@ -72,6 +72,7 @@ training:
     shuffle: true
     use_cuda: true
     translation_max_output_length: 30
+    # translation_max_output_length: 125
     keep_last_ckpts: 1
     batch_multiplier: 1
     logging_freq: 100

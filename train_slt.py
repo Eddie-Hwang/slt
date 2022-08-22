@@ -407,7 +407,7 @@ class SignLanguageTranslatorModule(pl.LightningModule):
 
 def main(hparams):
     pl.seed_everything(hparams.seed)
-    
+
     module = SignLanguageTranslatorModule(**vars(hparams))
     
     early_stopping, ckpt = module.get_callback_fn('val/bleu4', patience = 50)
@@ -421,11 +421,10 @@ def main(hparams):
     hparams.logger = logger
     
     trainer = pl.Trainer.from_argparse_args(hparams, callbacks = callbacks_list)
-    
+
     if not hparams.test:
         trainer.fit(module, ckpt_path = hparams.ckpt if hparams.ckpt != None else None)
-        if not hparams.fast_dev_run:
-            trainer.test(module)
+        trainer.test(module)
     else:
         assert hparams.ckpt != None, 'Trained checkpoint must be provided.'
         trainer.test(module, ckpt_path = hparams.ckpt)
@@ -453,34 +452,19 @@ if __name__=='__main__':
     parser.add_argument('--test', action = 'store_true')
     parser.add_argument('--ckpt', default = None)
     parser.add_argument('--tokenizer_type', type = str, default = 'wordpiece', help="[bpe, wordpiece, whitespace]")
-    parser.add_argument('--tokenizer_fpath', default = './wordpiece/phoenix/phoenix-wordpiece-512-vocab.json')
+    parser.add_argument('--tokenizer_fpath', default = './wordpiece/how2sign/how2sign-wordpiece-8192-vocab.json')
 
     hparams = parser.parse_args()
 
-    # main(hparams)
+    main(hparams)
     
-    datast_type = hparams.dataset_type
-    tokenizer_type = hparams.tokenizer_type
+    # datast_type = hparams.dataset_type
+    # tokenizer_type = hparams.tokenizer_type
     
-    tokenizer_fpath_list \
-        = [f'./{tokenizer_type}/{datast_type}/{datast_type}-{tokenizer_type}-{2**i}-vocab.json' for i in range(14, 16)]
+    # tokenizer_fpath_list \
+    #     = [f'./{tokenizer_type}/{datast_type}/{datast_type}-{tokenizer_type}-{2**i}-vocab.json' for i in range(9, 16)]
     
-    for tokenizer_fpath in tokenizer_fpath_list:
-        print(tokenizer_fpath)
-        hparams.tokenizer_fpath = tokenizer_fpath
-        main(hparams)
-
-
-'''
-(training on phoenix)
-python train_slt.py \
-    --accelerator gpu --devices 0 --num_workers 8 --use_early_stopping
-
-(training on how2sign)
-python train_slt.py \
-   --accelerator gpu --devices 0 --num_workers 8 --use_early_stopping \
-    --dataset_type how2sign \
-    --train_path /home/ejhwang/projects/how2sign/how2sign_realigned_train.csv \
-    --valid_path /home/ejhwang/projects/how2sign/how2sign_realigned_val.csv \
-    --test_path /home/ejhwang/projects/how2sign/how2sign_realigned_test.csv
-'''
+    # for tokenizer_fpath in tokenizer_fpath_list:
+    #     print(tokenizer_fpath)
+    #     hparams.tokenizer_fpath = tokenizer_fpath
+    #     main(hparams)
